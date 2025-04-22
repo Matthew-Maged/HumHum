@@ -4,6 +4,9 @@ using FluentValidation;
 using FluentValidation.AspNetCore;
 using HumHum.Extensions;
 using HumHum.Mock;
+using HumHum.SMTP;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Persistence;
@@ -11,6 +14,7 @@ using Persistence.Repositories;
 using Service.Abstractions;
 using Services;
 using Shared.Cloudinary;
+using Shared.Stripe;
 using StackExchange.Redis;
 
 namespace HumHum;
@@ -37,7 +41,8 @@ public class Program
             Connect Identity to a database using AddEntityFrameworkStores<ApplicationDbContext>().
         */
         builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
-                        .AddEntityFrameworkStores<HumHumContext>();
+                        .AddEntityFrameworkStores<HumHumContext>()
+                        .AddDefaultTokenProviders();
         builder.Services.Configure<IdentityOptions>(options =>
         {
             // Password settings
@@ -59,6 +64,8 @@ public class Program
         });
         builder.Services.AddControllersWithViews();
 
+        builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("EmailSettings"));
+        builder.Services.AddTransient<IEmailSender, EmailSender>();
 
 
 
@@ -67,8 +74,54 @@ public class Program
                 ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis")!)
            );
 
+
+        // In Program.cs, add these services before AddAuthentication
+        builder.Services.AddHttpContextAccessor();
+        builder.Services.AddScoped<IUserClaimsPrincipalFactory<ApplicationUser>,
+            UserClaimsPrincipalFactory<ApplicationUser, IdentityRole>>();
+
+
+        // Fix authentication configuration in Program.cs
+        builder.Services.AddAuthentication(options =>
+        {
+            options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+            options.DefaultChallengeScheme = GoogleDefaults.AuthenticationScheme;
+        })
+        .AddCookie()
+        .AddFacebook(facebookOptions =>
+        {
+            facebookOptions.AppId = builder.Configuration["Authentication:Facebook:AppId"];
+            facebookOptions.AppSecret = builder.Configuration["Authentication:Facebook:AppSecret"];
+        })
+        .AddGoogle(googleOptions =>
+        {
+            googleOptions.ClientId = builder.Configuration["Authentication:Google:ClientId"];
+            googleOptions.ClientSecret = builder.Configuration["Authentication:Google:ClientSecret"];
+        });
+
+
+
+
+        // Add to Program.cs for detailed logging
+        builder.Services.AddLogging(logging =>
+        {
+            logging.AddConsole();
+            logging.AddDebug();
+            logging.SetMinimumLevel(LogLevel.Trace);
+        });
+
+
+
+
+        builder.Services.AddSession();
+
         builder.Services.Configure<CloudinarySettings>
             (builder.Configuration.GetSection(nameof(CloudinarySettings)));
+
+
+        builder.Services.Configure<StripeSettings>
+          (builder.Configuration.GetSection(nameof(StripeSettings)));
+
 
 
         builder.Services.AddScoped<ICartRepository, CartRepository>();
@@ -122,8 +175,12 @@ public class Program
         app.UseHttpsRedirection();
         app.UseStaticFiles();
 
+        app.UseSession();
+
         app.UseRouting();
 
+
+        app.UseAuthentication();
         app.UseAuthorization();
 
         app.MapControllerRoute(
